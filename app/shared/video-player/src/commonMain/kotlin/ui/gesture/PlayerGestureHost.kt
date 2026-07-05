@@ -395,6 +395,7 @@ enum class GestureFamily(
     val keyboardControlFullscreen: Boolean = true,
     val keyboardControlSpeed: Boolean = true,
     val keyboardToggleDanmaku: Boolean = true,
+    val keyboardTogglePlayerStats: Boolean = true,
 ) {
     TOUCH(
         useDesktopGestureLayoutWorkaround = false,
@@ -448,6 +449,7 @@ fun PlayerGestureHost(
     onToggleFullscreen: () -> Unit = {},
     onExitFullscreen: () -> Unit = {},
     onToggleDanmaku: () -> Unit = {},
+    onTogglePlayerStats: () -> Unit = {},
 ) {
     val onTogglePauseResumeState by rememberUpdatedState(onTogglePauseResume)
 
@@ -588,6 +590,9 @@ fun PlayerGestureHost(
                     }
                     .ifThen(family.keyboardToggleDanmaku) {
                         onKey(ComposeKey.B, onToggleDanmaku)
+                    }
+                    .ifThen(family.keyboardTogglePlayerStats) {
+                        onKey(ComposeKey.Tab, onTogglePlayerStats)
                     }
                     .ifThen(family.scrollForVolume && audioLevelController != null) {
                         if (audioLevelController == null) return@ifThen this
@@ -798,6 +803,9 @@ fun PlayerGestureHost(
                         onKey(ComposeKey.Spacebar) {
                             onTogglePauseResumeState()
                         }
+                    }
+                    .ifThen(family.keyboardTogglePlayerStats) {
+                        onKey(ComposeKey.Tab, onTogglePlayerStats)
                     }
                     .fillMaxSize(),
             ) {
