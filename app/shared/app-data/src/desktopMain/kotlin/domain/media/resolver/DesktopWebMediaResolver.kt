@@ -36,6 +36,7 @@ import me.him188.ani.datasources.api.Media
 import me.him188.ani.datasources.api.matcher.MediaSourceWebVideoMatcherLoader
 import me.him188.ani.datasources.api.matcher.WebVideoMatcher
 import me.him188.ani.datasources.api.matcher.WebVideoMatcherContext
+import me.him188.ani.datasources.api.matcher.WebVideo
 import me.him188.ani.datasources.api.matcher.WebViewConfig
 import me.him188.ani.datasources.api.topic.ResourceLocation
 import me.him188.ani.utils.logging.error
@@ -54,6 +55,10 @@ import org.cef.network.CefCookieManager
 import org.cef.network.CefRequest
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
+import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.URI
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -125,13 +130,111 @@ class DesktopWebMediaResolver(
                     )?.let {
                     (match(it.url) as? WebVideoMatcher.MatchResult.Matched)?.video
                 } ?: throw MediaResolutionException(ResolutionFailures.NO_MATCHING_RESOURCE)
+
+            val proxyConfig = proxyProvider.proxy.first()
+            if (!isLikelyPlayableWebVideo(webVideo, proxyConfig)) {
+                logger.warn { "Rejected non-playable web video stream: ${webVideo.m3u8Url}" }
+                throw MediaResolutionException(ResolutionFailures.NO_MATCHING_RESOURCE)
+            }
+
             return@withContext HttpStreamingMediaDataProvider(
                 webVideo.m3u8Url,
                 media.originalTitle,
                 webVideo.headers,
                 media.extraFiles.toMediampMediaExtraFiles(),
+                options = proxyConfig.toVlcMediaOptions(),
             )
         }
+    }
+
+    private fun ProxyConfig?.toVlcMediaOptions(): List<String> {
+        this ?: return emptyList()
+        val url = runCatching { Url(this.url) }.getOrNull() ?: return emptyList()
+
+        return when (url.protocol.name.lowercase()) {
+            "http", "https" -> listOf(":http-proxy=${url.protocol.name}://${url.host}:${url.port}")
+            else -> emptyList()
+        }
+    }
+
+    private fun isLikelyPlayableWebVideo(webVideo: WebVideo, proxyConfig: ProxyConfig?): Boolean {
+        val uri = webVideo.m3u8Url
+        if (!uri.contains(".m3u8", ignoreCase = true)) return true
+
+        val playlist = runCatching {
+            readSmallTextResource(uri, webVideo.headers, proxyConfig, maxChars = 96 * 1024)
+        }.onFailure {
+            logger.warn(it) { "Failed to validate web video stream, allowing playback: $uri" }
+        }.getOrNull() ?: return true
+
+        if (!playlist.lineSequence().any { it.trim().equals("#EXTM3U", ignoreCase = true) }) {
+            return true
+        }
+
+        val mediaUris = playlist.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .take(24)
+            .toList()
+
+        if (mediaUris.isEmpty()) return true
+        if (mediaUris.any { it.contains(".m3u8", ignoreCase = true) }) return true
+
+        val imageLikeCount = mediaUris.count { it.hasImageLikeExtension() }
+        if (imageLikeCount == mediaUris.size) {
+            logger.warn {
+                "M3U8 playlist points only to image-like segments, firstSegment=${mediaUris.firstOrNull()}"
+            }
+            return false
+        }
+
+        return true
+    }
+
+    private fun readSmallTextResource(
+        url: String,
+        headers: Map<String, String>,
+        proxyConfig: ProxyConfig?,
+        maxChars: Int,
+    ): String {
+        val connection = (URI(url).toURL().openConnection(proxyConfig.toJavaProxy()) as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 5_000
+            readTimeout = 5_000
+            instanceFollowRedirects = true
+            headers.forEach { (name, value) ->
+                if (value.isNotBlank()) setRequestProperty(name, value)
+            }
+        }
+
+        return connection.inputStream.bufferedReader().use { reader ->
+            val buffer = CharArray(maxChars)
+            val read = reader.read(buffer)
+            if (read <= 0) "" else String(buffer, 0, read)
+        }
+    }
+
+    private fun ProxyConfig?.toJavaProxy(): Proxy {
+        this ?: return Proxy.NO_PROXY
+        val parsed = runCatching { Url(url) }.getOrNull() ?: return Proxy.NO_PROXY
+
+        val type = when (parsed.protocol.name.lowercase()) {
+            "http", "https" -> Proxy.Type.HTTP
+            "socks", "socks5" -> Proxy.Type.SOCKS
+            else -> return Proxy.NO_PROXY
+        }
+        return Proxy(type, InetSocketAddress(parsed.host, parsed.port))
+    }
+
+    private fun String.hasImageLikeExtension(): Boolean {
+        val path = runCatching { URI(this).path }.getOrNull() ?: substringBefore('?').substringBefore('#')
+        return path.endsWith(".png", ignoreCase = true) ||
+                path.endsWith(".jpg", ignoreCase = true) ||
+                path.endsWith(".jpeg", ignoreCase = true) ||
+                path.endsWith(".webp", ignoreCase = true) ||
+                path.endsWith(".gif", ignoreCase = true) ||
+                path.endsWith(".svg", ignoreCase = true) ||
+                path.endsWith(".ico", ignoreCase = true)
     }
 }
 
