@@ -17,8 +17,67 @@ import com.sun.jna.win32.W32APIOptions
 import io.ktor.http.Url
 import me.him188.ani.utils.logging.info
 import me.him188.ani.utils.logging.logger
+import me.him188.ani.utils.logging.warn
+import java.util.concurrent.TimeUnit
 
 sealed class DesktopSystemProxyDetector : SystemProxyDetector
+
+class MacOSSystemProxyDetector : DesktopSystemProxyDetector() {
+    private val logger = logger<MacOSSystemProxyDetector>()
+
+    override fun detect(): SystemProxyInfo? {
+        val settings = runCatching { readScutilProxySettings() }
+            .onFailure { logger.warn(it) { "Failed to read macOS system proxy settings" } }
+            .getOrNull()
+            ?: return null
+
+        val proxyUrl = buildProxyUrl(settings, "HTTPS", "http")
+            ?: buildProxyUrl(settings, "HTTP", "http")
+            ?: buildProxyUrl(settings, "SOCKS", "socks5")
+            ?: return null
+
+        logger.info { "Detected macOS system proxy: $proxyUrl" }
+        return SystemProxyInfo(Url(proxyUrl))
+    }
+
+    private fun readScutilProxySettings(): Map<String, String> {
+        val process = ProcessBuilder("scutil", "--proxy")
+            .redirectErrorStream(true)
+            .start()
+
+        if (!process.waitFor(3, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            error("Timed out while running scutil --proxy")
+        }
+
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        if (process.exitValue() != 0) {
+            error("scutil --proxy exited with ${process.exitValue()}: $output")
+        }
+
+        return output.lineSequence()
+            .mapNotNull { line ->
+                val index = line.indexOf(':')
+                if (index == -1) return@mapNotNull null
+
+                val key = line.substring(0, index).trim()
+                val value = line.substring(index + 1).trim()
+                if (key.isEmpty() || value.isEmpty()) return@mapNotNull null
+
+                key to value
+            }
+            .toMap()
+    }
+
+    private fun buildProxyUrl(settings: Map<String, String>, prefix: String, scheme: String): String? {
+        if (settings["${prefix}Enable"] != "1") return null
+
+        val host = settings["${prefix}Proxy"]?.takeIf { it.isNotBlank() } ?: return null
+        val port = settings["${prefix}Port"]?.toIntOrNull() ?: return null
+
+        return "$scheme://$host:$port"
+    }
+}
 
 class WindowsSystemProxyDetector : DesktopSystemProxyDetector() {
     private val logger = logger<WindowsSystemProxyDetector>()

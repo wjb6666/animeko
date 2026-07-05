@@ -15,6 +15,7 @@ import me.him188.ani.utils.platform.currentPlatformDesktop
 internal actual fun createSystemProxyDetector(): SystemProxyDetector {
     return when (currentPlatformDesktop()) {
         is Platform.Windows -> WindowsSystemProxyDetector()
+        is Platform.MacOS -> MacOSSystemProxyDetector()
         else -> NoOpSystemProxyDetector
     }
 }
