@@ -105,11 +105,19 @@ class DesktopWebMediaResolver(
                     .firstOrNull { it !is WebVideoMatcher.MatchResult.Continue }
             }
 
+            val proxyConfig = proxyProvider.proxy.first()
             val resourceMatcher = { url: String ->
-                when (match(url)) {
+                when (val result = match(url)) {
                     WebVideoMatcher.MatchResult.Continue -> Instruction.Continue
                     WebVideoMatcher.MatchResult.LoadPage -> Instruction.LoadPage
-                    is WebVideoMatcher.MatchResult.Matched -> Instruction.FoundResource
+                    is WebVideoMatcher.MatchResult.Matched -> {
+                        if (isLikelyPlayableWebVideo(result.video, proxyConfig)) {
+                            Instruction.FoundResource
+                        } else {
+                            logger.warn { "Skip non-playable web video candidate and keep scanning: ${result.video.m3u8Url}" }
+                            Instruction.Continue
+                        }
+                    }
                     null -> Instruction.Continue
                 }
             }
@@ -131,7 +139,6 @@ class DesktopWebMediaResolver(
                     (match(it.url) as? WebVideoMatcher.MatchResult.Matched)?.video
                 } ?: throw MediaResolutionException(ResolutionFailures.NO_MATCHING_RESOURCE)
 
-            val proxyConfig = proxyProvider.proxy.first()
             if (!isLikelyPlayableWebVideo(webVideo, proxyConfig)) {
                 logger.warn { "Rejected non-playable web video stream: ${webVideo.m3u8Url}" }
                 throw MediaResolutionException(ResolutionFailures.NO_MATCHING_RESOURCE)
