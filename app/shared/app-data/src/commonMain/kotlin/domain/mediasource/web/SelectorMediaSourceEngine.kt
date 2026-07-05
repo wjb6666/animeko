@@ -18,6 +18,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.URLBuilder
 import io.ktor.http.Url
+import io.ktor.http.decodeURLQueryComponent
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.peek
 import io.ktor.utils.io.readRemaining
@@ -314,36 +315,75 @@ abstract class SelectorMediaSourceEngine {
     }
 
     fun matchWebVideo(url: String, searchConfig: SelectorSearchConfig.MatchVideoConfig): WebVideoMatcher.MatchResult {
+        extractPlayableVideoUrl(url)?.let { videoUrl ->
+            return WebVideoMatcher.MatchResult.Matched(
+                searchConfig.createWebVideo(videoUrl),
+            )
+        }
+
         if (shouldLoadPage(url, searchConfig)) {
             return WebVideoMatcher.MatchResult.LoadPage
         }
 
         val result = searchConfig.matchVideoUrlRegex?.find(url) ?: return WebVideoMatcher.MatchResult.Continue
         val videoUrl = try {
-            result.groups["v"]?.value ?: url
+            result.groups["v"]?.value ?: extractPlayableVideoUrl(url) ?: url
         } catch (_: IllegalArgumentException) { // no group
-            url
+            extractPlayableVideoUrl(url) ?: url
         }
 
         return WebVideoMatcher.MatchResult.Matched(
-            WebVideo(
-                videoUrl,
-                mapOf(
-                    "User-Agent" to searchConfig.addHeadersToVideo.userAgent,
-                    "Referer" to searchConfig.addHeadersToVideo.referer,
-                    "Sec-Ch-Ua-Mobile" to "?0",
-                    "Sec-Ch-Ua-Platform" to "macOS",
-                    "Sec-Fetch-Dest" to "video",
-                    "Sec-Fetch-Mode" to "no-cors",
-                    "Sec-Fetch-Site" to "cross-site",
-                ),
-            ),
+            searchConfig.createWebVideo(videoUrl),
         )
     }
 
     @Throws(RepositoryException::class, CancellationException::class)
     protected abstract suspend fun doHttpGet(uri: String): Document
 }
+
+private val nestedVideoParameterRegex =
+    Regex("""(?:^|[?&])(?:url|v|video|src|file|play|path)=([^&#]+)""", RegexOption.IGNORE_CASE)
+
+private val httpUrlStartRegex = Regex("""https?://""", RegexOption.IGNORE_CASE)
+
+private val directPlayableUrlAtStartRegex =
+    Regex("""^https?://(?:(?!https?://)[^\s"'<>])+?\.(?:m3u8|mp4|flv|mkv)(?:\?[^\s"'<>]*)?""", RegexOption.IGNORE_CASE)
+
+private fun extractPlayableVideoUrl(url: String): String? {
+    nestedVideoParameterRegex.findAll(url).forEach { match ->
+        val encodedValue = match.groupValues.getOrNull(1).orEmpty()
+        decodeNestedVideoParameter(encodedValue)?.let { return it }
+    }
+
+    httpUrlStartRegex.findAll(url).forEach { match ->
+        val candidate = url.substring(match.range.first)
+        directPlayableUrlAtStartRegex.find(candidate)?.value?.let { return it }
+    }
+
+    return null
+}
+
+private fun decodeNestedVideoParameter(value: String): String? {
+    var decoded = value
+    repeat(3) {
+        decoded = decoded.runCatching { decodeURLQueryComponent(plusIsSpace = false) }.getOrElse { decoded }
+    }
+    return extractPlayableVideoUrl(decoded) ?: directPlayableUrlAtStartRegex.find(decoded)?.value
+}
+
+private fun SelectorSearchConfig.MatchVideoConfig.createWebVideo(videoUrl: String): WebVideo =
+    WebVideo(
+        videoUrl,
+        mapOf(
+            "User-Agent" to addHeadersToVideo.userAgent,
+            "Referer" to addHeadersToVideo.referer,
+            "Sec-Ch-Ua-Mobile" to "?0",
+            "Sec-Ch-Ua-Platform" to "macOS",
+            "Sec-Fetch-Dest" to "video",
+            "Sec-Fetch-Mode" to "no-cors",
+            "Sec-Fetch-Site" to "cross-site",
+        ),
+    )
 
 internal fun selectSubjectsForCaptchaProbe(
     document: Element,

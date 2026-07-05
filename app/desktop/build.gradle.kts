@@ -75,7 +75,6 @@ compose.desktop {
     application {
         jvmArgs(
             "-XX:+UseZGC",
-            "-XX:+ZGenerational",
             "-XX:SoftMaxHeapSize=512m",
             "-Dorg.slf4j.simpleLogger.defaultLogLevel=TRACE",
             "-Dsun.java2d.metal=true",
